@@ -11,6 +11,7 @@ from app.stroll_planner import Place
 
 PLACES_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText"
 ROUTE_MATRIX_URL = "https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix"
+GOOGLE_MAPS_SOLUTION_ID = "gmp_git_agentskills_v1"
 CITY_PLACE_TYPES = {
     "locality",
     "postal_town",
@@ -18,6 +19,17 @@ CITY_PLACE_TYPES = {
     "administrative_area_level_2",
     "administrative_area_level_3",
 }
+
+
+def build_request_headers(api_key: str, field_mask: str) -> dict[str, str]:
+    """Build the required headers shared by Maps Platform POST requests."""
+
+    return {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": api_key,
+        "X-Goog-FieldMask": field_mask,
+        "X-Goog-Maps-Solution-ID": GOOGLE_MAPS_SOLUTION_ID,
+    }
 
 
 class MapsApiError(RuntimeError):
@@ -53,14 +65,13 @@ class GoogleMapsClient:
     async def resolve_city(self, city: str) -> CityResolution:
         """Resolve a user-supplied city to a canonical locality and viewport."""
 
-        headers = {
-            "Content-Type": "application/json",
-            "X-Goog-Api-Key": self._api_key,
-            "X-Goog-FieldMask": (
+        headers = build_request_headers(
+            self._api_key,
+            (
                 "places.id,places.displayName,places.formattedAddress,"
                 "places.location,places.viewport,places.types"
             ),
-        }
+        )
         payload = {
             "textQuery": city,
             "pageSize": 5,
@@ -112,15 +123,14 @@ class GoogleMapsClient:
     async def search_text(
         self, spec: SearchSpec, city: CityResolution
     ) -> list[Place]:
-        headers = {
-            "Content-Type": "application/json",
-            "X-Goog-Api-Key": self._api_key,
-            "X-Goog-FieldMask": (
+        headers = build_request_headers(
+            self._api_key,
+            (
                 "places.id,places.displayName,places.formattedAddress,"
                 "places.location,places.googleMapsUri,places.rating,"
                 "places.userRatingCount,places.businessStatus"
             ),
-        }
+        )
         payload = {
             "textQuery": f"{spec.query} in {city.name}",
             "pageSize": 15,
@@ -191,13 +201,12 @@ class GoogleMapsClient:
             }
             for place in places
         ]
-        headers = {
-            "Content-Type": "application/json",
-            "X-Goog-Api-Key": self._api_key,
-            "X-Goog-FieldMask": (
+        headers = build_request_headers(
+            self._api_key,
+            (
                 "originIndex,destinationIndex,distanceMeters,duration,status,condition"
             ),
-        }
+        )
         payload = {
             "origins": waypoints,
             "destinations": waypoints,

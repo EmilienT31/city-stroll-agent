@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from app.city_stroll import CATEGORY_DEFAULTS, compile_searches
+from app.maps_client import GOOGLE_MAPS_SOLUTION_ID, build_request_headers
 from app.stroll_planner import (
     Place,
     build_neighborhood_candidates,
@@ -21,6 +22,16 @@ from app.stroll_planner import (
     order_with_route_matrix,
 )
 from tests.eval.response_quality import validate_success_result
+
+
+def test_maps_request_headers_include_solution_attribution() -> None:
+    headers = build_request_headers("test-key", "places.id")
+    assert headers == {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": "test-key",
+        "X-Goog-FieldMask": "places.id",
+        "X-Goog-Maps-Solution-ID": GOOGLE_MAPS_SOLUTION_ID,
+    }
 
 
 def _place(place_id: str, latitude: float, longitude: float, category: str) -> Place:
