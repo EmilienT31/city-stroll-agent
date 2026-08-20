@@ -1,0 +1,15 @@
+{
+  "eval_cases": [
+    {
+      "eval_case_id": "tokyo_menswear_ramen_matcha",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "Give me three Tokyo strolls with independent menswear, excellent ramen, matcha, and one cultural stop."
+          }
+        ]
+      }
+    }
+  ]
+}
