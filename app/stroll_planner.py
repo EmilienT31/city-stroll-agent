@@ -5,12 +5,12 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass, field
-from itertools import combinations, pairwise
+from itertools import combinations, pairwise, permutations
 from urllib.parse import urlencode
 
 EARTH_RADIUS_KM = 6371.0088
 TARGET_STOPS = 6
-NEIGHBORHOOD_RADIUS_KM = 1.6
+NEIGHBORHOOD_RADII_KM = (0.9, 1.3, 1.8, 2.4)
 
 
 @dataclass
@@ -27,11 +27,14 @@ class Place:
     user_rating_count: int = 0
     categories: set[str] = field(default_factory=set)
     matched_queries: set[str] = field(default_factory=set)
+    required_preferences: set[str] = field(default_factory=set)
     search_rank: int = 999
 
-    def merge_match(self, category: str, query: str) -> None:
+    def merge_match(self, category: str, query: str, *, required: bool = False) -> None:
         self.categories.add(category)
         self.matched_queries.add(query)
+        if required:
+            self.required_preferences.add(query)
 
 
 @dataclass(frozen=True)
@@ -42,6 +45,7 @@ class NeighborhoodCandidate:
     places: tuple[Place, ...]
     approximate_distance_meters: int
     score: float
+    radius_km: float
 
 
 def haversine_km(first: Place, second: Place) -> float:
@@ -127,9 +131,22 @@ def _brand_key(place: Place) -> str:
     return tokens[0] if tokens else place.name.casefold()[:16]
 
 
-def _select_balanced_places(pool: list[Place], seed: Place) -> tuple[Place, ...]:
+def _select_balanced_places(
+    pool: list[Place], seed: Place, required_preferences: frozenset[str]
+) -> tuple[Place, ...]:
     selected: list[Place] = []
     selected_ids: set[str] = set()
+    for preference in sorted(required_preferences):
+        matches = [
+            place for place in pool if preference in place.required_preferences
+        ]
+        if not matches:
+            return ()
+        choice = max(matches, key=lambda place: (_local_score(place, seed), place.place_id))
+        if choice.place_id not in selected_ids:
+            selected.append(choice)
+            selected_ids.add(choice.place_id)
+
     for group in ({"shopping"}, {"food", "drink"}, {"interest"}):
         matches = [place for place in pool if place.categories & group]
         if not matches:
@@ -163,30 +180,44 @@ def _select_balanced_places(pool: list[Place], seed: Place) -> tuple[Place, ...]
     return tuple(selected) if len(selected) >= 5 else ()
 
 
-def _neighborhood_name(places: tuple[Place, ...]) -> str:
+def _neighborhood_name(places: tuple[Place, ...], city_name: str) -> str:
     labels: dict[str, int] = {}
     for place in places:
         for match in re.findall(
-            r"\b([A-Za-z][A-Za-z .'-]{1,35}(?:City|Ward))\b", place.address
+            r"\b([^,]{2,40}(?:City|Ward|Borough|District|Arrondissement))\b",
+            place.address,
+            flags=re.IGNORECASE,
         ):
             label = match.strip()
+            if label.casefold() == city_name.casefold():
+                continue
             labels[label] = labels.get(label, 0) + 1
     if labels:
         return max(labels, key=lambda label: (labels[label], -len(label), label))
     return f"Around {places[0].name}"
 
 
-def build_neighborhood_candidates(places: list[Place]) -> list[NeighborhoodCandidate]:
+def build_neighborhood_candidates(
+    places: list[Place],
+    required_preferences: frozenset[str] = frozenset(),
+    city_name: str = "",
+) -> list[NeighborhoodCandidate]:
     """Build compact, category-balanced candidate paths around venue seeds."""
 
     candidates: list[NeighborhoodCandidate] = []
     for seed in sorted(places, key=lambda place: place.place_id):
-        pool = [
-            place
-            for place in places
-            if haversine_km(seed, place) <= NEIGHBORHOOD_RADIUS_KM
-        ]
-        balanced = _select_balanced_places(pool, seed)
+        balanced: tuple[Place, ...] = ()
+        selected_radius = NEIGHBORHOOD_RADII_KM[-1]
+        for radius_km in NEIGHBORHOOD_RADII_KM:
+            pool = [
+                place
+                for place in places
+                if haversine_km(seed, place) <= radius_km
+            ]
+            balanced = _select_balanced_places(pool, seed, required_preferences)
+            if balanced:
+                selected_radius = radius_km
+                break
         if not balanced:
             continue
         ordered = _nearest_neighbor_order(balanced)
@@ -199,12 +230,13 @@ def build_neighborhood_candidates(places: list[Place]) -> list[NeighborhoodCandi
         score = category_count * 15 + popularity - target_penalty * 6
         candidates.append(
             NeighborhoodCandidate(
-                name=_neighborhood_name(ordered),
+                name=_neighborhood_name(ordered, city_name),
                 center_latitude=seed.latitude,
                 center_longitude=seed.longitude,
                 places=ordered,
                 approximate_distance_meters=distance_meters,
                 score=score,
+                radius_km=selected_radius,
             )
         )
 
@@ -222,7 +254,8 @@ def build_neighborhood_candidates(places: list[Place]) -> list[NeighborhoodCandi
             center_b = Place(
                 "", "", "", existing.center_latitude, existing.center_longitude, ""
             )
-            if overlap > 0 or haversine_km(center_a, center_b) < 1.8:
+            minimum_separation = max(1.2, min(candidate.radius_km, existing.radius_km))
+            if overlap > 0 or haversine_km(center_a, center_b) < minimum_separation:
                 distinct = False
                 break
         if distinct:
@@ -245,7 +278,9 @@ def order_with_route_matrix(
 
 
 def optimize_path_with_route_matrix(
-    places: tuple[Place, ...], distances: list[list[int]]
+    places: tuple[Place, ...],
+    distances: list[list[int]],
+    required_preferences: frozenset[str] = frozenset(),
 ) -> tuple[tuple[Place, ...], int]:
     """Choose a balanced five- or six-stop subset closest to the 3 km target."""
 
@@ -263,21 +298,23 @@ def optimize_path_with_route_matrix(
                 {"food", "drink"} & covered
             ):
                 continue
-            subset_matrix = [
-                [distances[first][second] for second in indices] for first in indices
-            ]
-            ordered = order_with_route_matrix(subset, subset_matrix)
-            original_index = {place.place_id: index for index, place in enumerate(places)}
-            distance = sum(
-                distances[original_index[first.place_id]][original_index[second.place_id]]
-                for first, second in pairwise(ordered)
-                if distances[original_index[first.place_id]][original_index[second.place_id]]
-                >= 0
+            covered_requirements = set().union(
+                *(place.required_preferences for place in subset)
             )
-            outside_target = 0 if 2000 <= distance <= 4000 else 1
-            score = (outside_target, abs(distance - 3000), -size)
-            if best is None or score < best[0]:
-                best = (score, ordered, distance)
+            if not required_preferences.issubset(covered_requirements):
+                continue
+            for order in permutations(indices):
+                legs = [
+                    distances[first][second] for first, second in pairwise(order)
+                ]
+                if any(distance < 0 for distance in legs):
+                    continue
+                distance = sum(legs)
+                outside_target = 0 if 2000 <= distance <= 4000 else 1
+                score = (outside_target, abs(distance - 3000), -size)
+                ordered = tuple(places[index] for index in order)
+                if best is None or score < best[0]:
+                    best = (score, ordered, distance)
     if best is None:
         ordered = order_with_route_matrix(places, distances)
         original_index = {place.place_id: index for index, place in enumerate(places)}

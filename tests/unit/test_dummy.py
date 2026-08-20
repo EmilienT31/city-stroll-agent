@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from app.city_stroll import CATEGORY_DEFAULTS, compile_searches
 from app.stroll_planner import (
     Place,
     build_neighborhood_candidates,
@@ -19,6 +20,7 @@ from app.stroll_planner import (
     optimize_path_with_route_matrix,
     order_with_route_matrix,
 )
+from tests.eval.response_quality import validate_success_result
 
 
 def _place(place_id: str, latitude: float, longitude: float, category: str) -> Place:
@@ -110,3 +112,106 @@ def test_neighborhood_candidates_are_distinct_and_balanced() -> None:
         )
         for candidate in candidates
     )
+
+
+def test_searches_are_compiled_from_structured_preferences() -> None:
+    searches, required = compile_searches(
+        shopping_preferences=["ceramics", "vintage clothing", "ignored third item"],
+        food_preferences=["vegetarian bistros"],
+        drink_preferences=[],
+        interest_preferences=["modern architecture"],
+        required_preferences=["ceramics"],
+    )
+    assert required == frozenset({"ceramics"})
+    assert [search.query for search in searches if search.category == "shopping"] == [
+        "ceramics",
+        "vintage clothing",
+    ]
+    assert any(
+        search.preference_key == "ceramics" and search.required for search in searches
+    )
+    assert any(
+        search.query == CATEGORY_DEFAULTS["drink"] for search in searches
+    )
+    assert all("tokyo" not in search.query.casefold() for search in searches)
+
+
+def test_uncategorized_requirement_gets_its_own_search() -> None:
+    searches, required = compile_searches([], [], [], [], ["record stores"])
+    assert required == frozenset({"record stores"})
+    assert any(
+        search.category == "preference"
+        and search.query == "record stores"
+        and search.required
+        for search in searches
+    )
+
+
+def test_single_shopping_and_interest_tastes_get_discovery_fallbacks() -> None:
+    searches, _ = compile_searches(
+        ["bookstores"], ["bistros"], ["coffee"], ["architecture"], []
+    )
+    assert [search.query for search in searches if search.category == "shopping"] == [
+        "bookstores",
+        CATEGORY_DEFAULTS["shopping"],
+    ]
+    assert [search.query for search in searches if search.category == "interest"] == [
+        "architecture",
+        CATEGORY_DEFAULTS["interest"],
+    ]
+
+
+def test_route_optimizer_preserves_required_preference() -> None:
+    categories = ("shopping", "food", "drink", "interest", "shopping", "drink")
+    places = tuple(
+        _place(str(index), 48.85, 2.34 + index * 0.001, category)
+        for index, category in enumerate(categories)
+    )
+    places[5].required_preferences.add("specialty tea")
+    matrix = [[abs(first - second) * 500 for second in range(6)] for first in range(6)]
+    for index in range(5):
+        matrix[index][5] = 3000
+        matrix[5][index] = 3000
+    ordered, _ = optimize_path_with_route_matrix(
+        places, matrix, required_preferences=frozenset({"specialty tea"})
+    )
+    assert "5" in {place.place_id for place in ordered}
+
+
+def test_adaptive_radius_supports_more_spread_out_venues() -> None:
+    categories = ("shopping", "food", "drink", "interest", "shopping", "food")
+    places = [
+        _place(str(index), 34.05, -118.25 + index * 0.004, category)
+        for index, category in enumerate(categories)
+    ]
+    candidates = build_neighborhood_candidates(places, city_name="Los Angeles")
+    assert candidates
+    assert candidates[0].radius_km > 0.9
+
+
+def test_eval_gate_checks_required_preferences_and_route_shape() -> None:
+    result = {
+        "status": "ok",
+        "requiredPreferences": ["ceramics"],
+        "paths": [
+            {
+                "walkingDistanceMeters": 3000,
+                "routeUrl": "https://www.google.com/maps/dir/",
+                "stops": [
+                    {
+                        "placeId": f"{path_index}-{stop_index}",
+                        "googleMapsUri": "https://maps.google.com/place",
+                        "requiredPreferences": ["ceramics"] if stop_index == 0 else [],
+                    }
+                    for stop_index in range(5)
+                ],
+            }
+            for path_index in range(3)
+        ],
+    }
+    valid, _ = validate_success_result(result)
+    assert valid
+    result["paths"][2]["stops"][0]["requiredPreferences"] = []
+    valid, reason = validate_success_result(result)
+    assert not valid
+    assert "required preference" in reason

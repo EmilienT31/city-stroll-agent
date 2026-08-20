@@ -1,5 +1,14 @@
 # city-stroll-agent
 
+City Stroll generates three compact, non-overlapping, taste-matched walking paths
+for any city that Google Places can resolve as a locality. The tool resolves the
+city dynamically, restricts venue searches to its viewport, and adapts its
+neighborhood radius to local venue density.
+
+Preferences are city-neutral and structured into shopping, food, drink, and
+places of interest. Explicitly required preferences must occur in every path when
+coverage is sufficient; otherwise the tool returns `insufficient_data` rather than
+inventing or silently relaxing results.
 
 Agent generated with `agents-cli` version `1.4.0`
 
@@ -44,6 +53,18 @@ Test the agent with a local web server:
 
 ```bash
 agents-cli playground
+```
+
+Run the deterministic tool directly (without invoking Gemini):
+
+```bash
+uv run python -m app.demo \
+  --city "Paris, France" \
+  --shopping "independent ceramics" \
+  --food "vegetarian bistros" \
+  --drink "specialty coffee" \
+  --interest "modern architecture" \
+  --required "independent ceramics"
 ```
 
 You can also use features from the [ADK](https://adk.dev/) CLI with `uv run adk`.

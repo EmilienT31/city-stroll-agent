@@ -10,6 +10,28 @@
           }
         ]
       }
+    },
+    {
+      "eval_case_id": "paris_ceramics_bistro_architecture",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "Create three strolls in Paris, France, with independent ceramics shops, vegetarian bistros, specialty coffee, and modern architecture. Ceramics is mandatory in every route."
+          }
+        ]
+      }
+    },
+    {
+      "eval_case_id": "new_york_records_bagels_art",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "Plan three compact walks in New York City, USA, around record stores, bagels, espresso, and contemporary art."
+          }
+        ]
+      }
     }
   ]
 }

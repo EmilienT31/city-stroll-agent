@@ -11,6 +11,13 @@ from app.stroll_planner import Place
 
 PLACES_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText"
 ROUTE_MATRIX_URL = "https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix"
+CITY_PLACE_TYPES = {
+    "locality",
+    "postal_town",
+    "administrative_area_level_1",
+    "administrative_area_level_2",
+    "administrative_area_level_3",
+}
 
 
 class MapsApiError(RuntimeError):
@@ -21,6 +28,19 @@ class MapsApiError(RuntimeError):
 class SearchSpec:
     category: str
     query: str
+    preference_key: str
+    required: bool = False
+
+
+@dataclass(frozen=True)
+class CityResolution:
+    place_id: str
+    name: str
+    formatted_address: str
+    latitude: float
+    longitude: float
+    viewport_low: tuple[float, float]
+    viewport_high: tuple[float, float]
 
 
 class GoogleMapsClient:
@@ -30,7 +50,68 @@ class GoogleMapsClient:
         self._api_key = api_key
         self._timeout = aiohttp.ClientTimeout(total=timeout_seconds)
 
-    async def search_text(self, spec: SearchSpec, city: str) -> list[Place]:
+    async def resolve_city(self, city: str) -> CityResolution:
+        """Resolve a user-supplied city to a canonical locality and viewport."""
+
+        headers = {
+            "Content-Type": "application/json",
+            "X-Goog-Api-Key": self._api_key,
+            "X-Goog-FieldMask": (
+                "places.id,places.displayName,places.formattedAddress,"
+                "places.location,places.viewport,places.types"
+            ),
+        }
+        payload = {
+            "textQuery": city,
+            "pageSize": 5,
+            "languageCode": "en",
+        }
+        async with aiohttp.ClientSession(timeout=self._timeout) as session:
+            async with session.post(
+                PLACES_SEARCH_URL, headers=headers, json=payload
+            ) as response:
+                body = await response.text()
+                if response.status != 200:
+                    raise MapsApiError(
+                        f"City resolution returned HTTP {response.status}: {body[:500]}"
+                    )
+
+        for item in json.loads(body).get("places", []):
+            if not CITY_PLACE_TYPES.intersection(item.get("types", [])):
+                continue
+            location = item.get("location") or {}
+            viewport = item.get("viewport") or {}
+            low = viewport.get("low") or {}
+            high = viewport.get("high") or {}
+            required_values = (
+                item.get("id"),
+                (item.get("displayName") or {}).get("text"),
+                location.get("latitude"),
+                location.get("longitude"),
+                low.get("latitude"),
+                low.get("longitude"),
+                high.get("latitude"),
+                high.get("longitude"),
+            )
+            if any(value is None for value in required_values):
+                continue
+            return CityResolution(
+                place_id=str(required_values[0]),
+                name=str(required_values[1]),
+                formatted_address=item.get("formattedAddress", ""),
+                latitude=float(required_values[2]),
+                longitude=float(required_values[3]),
+                viewport_low=(float(required_values[4]), float(required_values[5])),
+                viewport_high=(float(required_values[6]), float(required_values[7])),
+            )
+        raise MapsApiError(
+            "No city or administrative area with a usable viewport was found. "
+            "Add a country or region."
+        )
+
+    async def search_text(
+        self, spec: SearchSpec, city: CityResolution
+    ) -> list[Place]:
         headers = {
             "Content-Type": "application/json",
             "X-Goog-Api-Key": self._api_key,
@@ -41,9 +122,21 @@ class GoogleMapsClient:
             ),
         }
         payload = {
-            "textQuery": f"{spec.query} in {city}",
+            "textQuery": f"{spec.query} in {city.name}",
             "pageSize": 15,
             "languageCode": "en",
+            "locationRestriction": {
+                "rectangle": {
+                    "low": {
+                        "latitude": city.viewport_low[0],
+                        "longitude": city.viewport_low[1],
+                    },
+                    "high": {
+                        "latitude": city.viewport_high[0],
+                        "longitude": city.viewport_high[1],
+                    },
+                }
+            },
         }
         async with aiohttp.ClientSession(timeout=self._timeout) as session:
             async with session.post(PLACES_SEARCH_URL, headers=headers, json=payload) as response:
@@ -76,7 +169,11 @@ class GoogleMapsClient:
                 user_rating_count=int(item.get("userRatingCount", 0)),
                 search_rank=search_rank,
             )
-            place.merge_match(spec.category, spec.query)
+            place.merge_match(
+                spec.category,
+                spec.preference_key,
+                required=spec.required,
+            )
             results.append(place)
         return results
 
