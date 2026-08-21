@@ -1,5 +1,7 @@
 """Local LLM-as-judge for `custom_response_quality` (see eval_config.yaml)."""
 
+from urllib.parse import parse_qs, urlparse
+
 from google import genai
 from google.genai import types
 from pydantic import BaseModel
@@ -14,11 +16,14 @@ def _latest_tool_result(instance):
     results = []
     for turn in (instance.get("agent_data") or {}).get("turns", []):
         for event in turn.get("events", []):
-            for part in ((event.get("content") or {}).get("parts") or []):
+            for part in (event.get("content") or {}).get("parts") or []:
                 function_response = part.get("function_response") or part.get(
                     "functionResponse"
                 )
-                if function_response and function_response.get("name") == "generate_paths":
+                if (
+                    function_response
+                    and function_response.get("name") == "generate_paths"
+                ):
                     results.append(function_response.get("response") or {})
     return results[-1] if results else None
 
@@ -31,6 +36,17 @@ def validate_success_result(result):
     paths = result.get("paths") or []
     if len(paths) != 3:
         return False, "A successful result must contain exactly three paths."
+    if result.get("attribution") != "Google Maps":
+        return False, "Successful Maps-derived results must include attribution."
+    anchors = result.get("anchors") or {}
+    start_anchor = anchors.get("start")
+    end_anchor = anchors.get("end")
+    if anchors.get("roundTrip") and (
+        not start_anchor
+        or not end_anchor
+        or start_anchor.get("placeId") != end_anchor.get("placeId")
+    ):
+        return False, "A round trip must start and end at the same resolved anchor."
     seen_place_ids = set()
     required = set(result.get("requiredPreferences") or [])
     for path in paths:
@@ -41,6 +57,19 @@ def validate_success_result(result):
             return False, "Every path must be within the 2-4 km target."
         if not path.get("routeUrl"):
             return False, "Every path must include a Maps route URL."
+        path_anchors = path.get("anchors") or {}
+        route_parameters = parse_qs(urlparse(path["routeUrl"]).query)
+        for key, anchor in (("start", start_anchor), ("end", end_anchor)):
+            if not anchor:
+                continue
+            if (path_anchors.get(key) or {}).get("placeId") != anchor.get("placeId"):
+                return False, f"Every path must preserve the resolved {key} anchor."
+            route_key = "origin" if key == "start" else "destination"
+            expected_coordinate = (
+                f"{anchor.get('latitude'):.6f},{anchor.get('longitude'):.6f}"
+            )
+            if route_parameters.get(route_key) != [expected_coordinate]:
+                return False, f"The route URL must use the resolved {key} anchor."
         path_required = set()
         for stop in stops:
             place_id = stop.get("placeId")
@@ -62,7 +91,8 @@ def evaluate(instance):
         "5 excellent). A successful answer must use tool-grounded venues and Maps "
         "links, return exactly three distinct compact paths when the tool has enough "
         "data, respect explicit required preferences in every path, compare the "
-        "alternatives clearly, and preserve safety or verification caveats. If the "
+        "alternatives clearly, honor explicit start/end/round-trip anchors, include "
+        "Google Maps attribution, and preserve safety or verification caveats. If the "
         "tool reports insufficient data, the answer must say so without fabricating "
         "results and suggest a useful constraint to relax."
     )

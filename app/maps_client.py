@@ -55,6 +55,44 @@ class CityResolution:
     viewport_high: tuple[float, float]
 
 
+@dataclass(frozen=True)
+class AnchorResolution:
+    place_id: str
+    name: str
+    formatted_address: str
+    latitude: float
+    longitude: float
+    google_maps_uri: str
+
+    def as_place(self) -> Place:
+        """Return the planner representation without treating the anchor as a stop."""
+
+        return Place(
+            place_id=self.place_id,
+            name=self.name,
+            address=self.formatted_address,
+            latitude=self.latitude,
+            longitude=self.longitude,
+            google_maps_uri=self.google_maps_uri,
+            categories={"anchor"},
+        )
+
+
+def location_in_city_viewport(
+    latitude: float, longitude: float, city: CityResolution
+) -> bool:
+    """Return whether coordinates fall inside the resolved city rectangle."""
+
+    latitude_inside = city.viewport_low[0] <= latitude <= city.viewport_high[0]
+    low_longitude = city.viewport_low[1]
+    high_longitude = city.viewport_high[1]
+    if low_longitude <= high_longitude:
+        longitude_inside = low_longitude <= longitude <= high_longitude
+    else:
+        longitude_inside = longitude >= low_longitude or longitude <= high_longitude
+    return latitude_inside and longitude_inside
+
+
 class GoogleMapsClient:
     def __init__(self, api_key: str, timeout_seconds: int = 20) -> None:
         if not api_key:
@@ -120,9 +158,76 @@ class GoogleMapsClient:
             "Add a country or region."
         )
 
-    async def search_text(
-        self, spec: SearchSpec, city: CityResolution
-    ) -> list[Place]:
+    async def resolve_anchor(
+        self, anchor: str, city: CityResolution
+    ) -> AnchorResolution:
+        """Resolve an anchor and reject results outside the requested city."""
+
+        headers = build_request_headers(
+            self._api_key,
+            (
+                "places.id,places.displayName,places.formattedAddress,"
+                "places.location,places.googleMapsUri,places.businessStatus"
+            ),
+        )
+        payload = {
+            "textQuery": f"{anchor} in {city.name}",
+            "pageSize": 5,
+            "languageCode": "en",
+            "locationBias": {
+                "rectangle": {
+                    "low": {
+                        "latitude": city.viewport_low[0],
+                        "longitude": city.viewport_low[1],
+                    },
+                    "high": {
+                        "latitude": city.viewport_high[0],
+                        "longitude": city.viewport_high[1],
+                    },
+                }
+            },
+        }
+        async with aiohttp.ClientSession(timeout=self._timeout) as session:
+            async with session.post(
+                PLACES_SEARCH_URL, headers=headers, json=payload
+            ) as response:
+                body = await response.text()
+                if response.status != 200:
+                    raise MapsApiError(
+                        f"Anchor resolution returned HTTP {response.status}: "
+                        f"{body[:500]}"
+                    )
+
+        for item in json.loads(body).get("places", []):
+            if item.get("businessStatus") == "CLOSED_PERMANENTLY":
+                continue
+            location = item.get("location") or {}
+            latitude = location.get("latitude")
+            longitude = location.get("longitude")
+            required_values = (
+                item.get("id"),
+                (item.get("displayName") or {}).get("text"),
+                latitude,
+                longitude,
+                item.get("googleMapsUri"),
+            )
+            if any(value is None for value in required_values):
+                continue
+            if not location_in_city_viewport(float(latitude), float(longitude), city):
+                continue
+            return AnchorResolution(
+                place_id=str(required_values[0]),
+                name=str(required_values[1]),
+                formatted_address=item.get("formattedAddress", ""),
+                latitude=float(latitude),
+                longitude=float(longitude),
+                google_maps_uri=str(required_values[4]),
+            )
+        raise MapsApiError(
+            f"The anchor '{anchor}' could not be resolved inside {city.name}."
+        )
+
+    async def search_text(self, spec: SearchSpec, city: CityResolution) -> list[Place]:
         headers = build_request_headers(
             self._api_key,
             (
@@ -149,7 +254,9 @@ class GoogleMapsClient:
             },
         }
         async with aiohttp.ClientSession(timeout=self._timeout) as session:
-            async with session.post(PLACES_SEARCH_URL, headers=headers, json=payload) as response:
+            async with session.post(
+                PLACES_SEARCH_URL, headers=headers, json=payload
+            ) as response:
                 body = await response.text()
                 if response.status != 200:
                     raise MapsApiError(
@@ -166,7 +273,11 @@ class GoogleMapsClient:
             latitude = location.get("latitude")
             longitude = location.get("longitude")
             maps_uri = item.get("googleMapsUri")
-            if not all((place_id, name, maps_uri)) or latitude is None or longitude is None:
+            if (
+                not all((place_id, name, maps_uri))
+                or latitude is None
+                or longitude is None
+            ):
                 continue
             place = Place(
                 place_id=place_id,
@@ -188,6 +299,10 @@ class GoogleMapsClient:
         return results
 
     async def route_matrix(self, places: tuple[Place, ...]) -> list[list[int]]:
+        if not places:
+            raise ValueError("At least one route-matrix waypoint is required")
+        if len(places) ** 2 > 625:
+            raise ValueError("Route matrix exceeds the 625-element walking limit")
         waypoints = [
             {
                 "waypoint": {
@@ -203,9 +318,7 @@ class GoogleMapsClient:
         ]
         headers = build_request_headers(
             self._api_key,
-            (
-                "originIndex,destinationIndex,distanceMeters,duration,status,condition"
-            ),
+            ("originIndex,destinationIndex,distanceMeters,duration,status,condition"),
         )
         payload = {
             "origins": waypoints,
@@ -213,7 +326,9 @@ class GoogleMapsClient:
             "travelMode": "WALK",
         }
         async with aiohttp.ClientSession(timeout=self._timeout) as session:
-            async with session.post(ROUTE_MATRIX_URL, headers=headers, json=payload) as response:
+            async with session.post(
+                ROUTE_MATRIX_URL, headers=headers, json=payload
+            ) as response:
                 body = await response.text()
                 if response.status != 200:
                     raise MapsApiError(

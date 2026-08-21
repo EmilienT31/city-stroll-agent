@@ -137,12 +137,12 @@ def _select_balanced_places(
     selected: list[Place] = []
     selected_ids: set[str] = set()
     for preference in sorted(required_preferences):
-        matches = [
-            place for place in pool if preference in place.required_preferences
-        ]
+        matches = [place for place in pool if preference in place.required_preferences]
         if not matches:
             return ()
-        choice = max(matches, key=lambda place: (_local_score(place, seed), place.place_id))
+        choice = max(
+            matches, key=lambda place: (_local_score(place, seed), place.place_id)
+        )
         if choice.place_id not in selected_ids:
             selected.append(choice)
             selected_ids.add(choice.place_id)
@@ -151,7 +151,9 @@ def _select_balanced_places(
         matches = [place for place in pool if place.categories & group]
         if not matches:
             return ()
-        choice = max(matches, key=lambda place: (_local_score(place, seed), place.place_id))
+        choice = max(
+            matches, key=lambda place: (_local_score(place, seed), place.place_id)
+        )
         if choice.place_id not in selected_ids:
             selected.append(choice)
             selected_ids.add(choice.place_id)
@@ -201,6 +203,8 @@ def build_neighborhood_candidates(
     places: list[Place],
     required_preferences: frozenset[str] = frozenset(),
     city_name: str = "",
+    anchor_points: tuple[Place, ...] = (),
+    max_candidates: int = 3,
 ) -> list[NeighborhoodCandidate]:
     """Build compact, category-balanced candidate paths around venue seeds."""
 
@@ -209,11 +213,7 @@ def build_neighborhood_candidates(
         balanced: tuple[Place, ...] = ()
         selected_radius = NEIGHBORHOOD_RADII_KM[-1]
         for radius_km in NEIGHBORHOOD_RADII_KM:
-            pool = [
-                place
-                for place in places
-                if haversine_km(seed, place) <= radius_km
-            ]
+            pool = [place for place in places if haversine_km(seed, place) <= radius_km]
             balanced = _select_balanced_places(pool, seed, required_preferences)
             if balanced:
                 selected_radius = radius_km
@@ -226,8 +226,11 @@ def build_neighborhood_candidates(
             continue
         category_count = len(set().union(*(place.categories for place in ordered)))
         target_penalty = abs(distance_meters - 3000) / 1000
+        anchor_penalty = sum(haversine_km(seed, anchor) for anchor in anchor_points)
         popularity = sum(_popularity(place) for place in ordered) / len(ordered)
-        score = category_count * 15 + popularity - target_penalty * 6
+        score = (
+            category_count * 15 + popularity - target_penalty * 6 - anchor_penalty * 12
+        )
         candidates.append(
             NeighborhoodCandidate(
                 name=_neighborhood_name(ordered, city_name),
@@ -241,13 +244,28 @@ def build_neighborhood_candidates(
         )
 
     candidates.sort(key=lambda candidate: (-candidate.score, candidate.name))
+    if anchor_points:
+        selected: list[NeighborhoodCandidate] = []
+        seen_place_sets: set[frozenset[str]] = set()
+        for candidate in candidates:
+            candidate_ids = frozenset(place.place_id for place in candidate.places)
+            if candidate_ids in seen_place_sets:
+                continue
+            seen_place_sets.add(candidate_ids)
+            selected.append(candidate)
+            if len(selected) == max_candidates:
+                break
+        return selected
+
     selected: list[NeighborhoodCandidate] = []
     for candidate in candidates:
         candidate_ids = {place.place_id for place in candidate.places}
         distinct = True
         for existing in selected:
             existing_ids = {place.place_id for place in existing.places}
-            overlap = len(candidate_ids & existing_ids) / len(candidate_ids | existing_ids)
+            overlap = len(candidate_ids & existing_ids) / len(
+                candidate_ids | existing_ids
+            )
             center_a = Place(
                 "", "", "", candidate.center_latitude, candidate.center_longitude, ""
             )
@@ -260,7 +278,7 @@ def build_neighborhood_candidates(
                 break
         if distinct:
             selected.append(candidate)
-        if len(selected) == 3:
+        if len(selected) == max_candidates:
             break
     return selected
 
@@ -281,18 +299,25 @@ def optimize_path_with_route_matrix(
     places: tuple[Place, ...],
     distances: list[list[int]],
     required_preferences: frozenset[str] = frozenset(),
+    start_anchor_index: int | None = None,
+    end_anchor_index: int | None = None,
+    excluded_place_ids: frozenset[str] = frozenset(),
 ) -> tuple[tuple[Place, ...], int]:
-    """Choose a balanced five- or six-stop subset closest to the 3 km target."""
+    """Choose and order venues, honoring optional fixed route endpoints."""
 
-    if len(distances) != len(places) or any(
-        len(row) != len(places) for row in distances
-    ):
-        raise ValueError("Route matrix dimensions do not match places")
+    matrix_size = len(distances)
+    if matrix_size < len(places) or any(len(row) != matrix_size for row in distances):
+        raise ValueError("Route matrix dimensions do not match route nodes")
+    for anchor_index in (start_anchor_index, end_anchor_index):
+        if anchor_index is not None and not 0 <= anchor_index < matrix_size:
+            raise ValueError("Anchor index is outside the route matrix")
 
     best: tuple[tuple[int, int, int], tuple[Place, ...], int] | None = None
     for size in range(min(TARGET_STOPS, len(places)), 4, -1):
         for indices in combinations(range(len(places)), size):
             subset = tuple(places[index] for index in indices)
+            if any(place.place_id in excluded_place_ids for place in subset):
+                continue
             covered = set().union(*(place.categories for place in subset))
             if not {"shopping", "interest"}.issubset(covered) or not (
                 {"food", "drink"} & covered
@@ -304,8 +329,14 @@ def optimize_path_with_route_matrix(
             if not required_preferences.issubset(covered_requirements):
                 continue
             for order in permutations(indices):
+                route_indices = list(order)
+                if start_anchor_index is not None:
+                    route_indices.insert(0, start_anchor_index)
+                if end_anchor_index is not None:
+                    route_indices.append(end_anchor_index)
                 legs = [
-                    distances[first][second] for first, second in pairwise(order)
+                    distances[first][second]
+                    for first, second in pairwise(route_indices)
                 ]
                 if any(distance < 0 for distance in legs):
                     continue
@@ -316,23 +347,27 @@ def optimize_path_with_route_matrix(
                 if best is None or score < best[0]:
                     best = (score, ordered, distance)
     if best is None:
-        ordered = order_with_route_matrix(places, distances)
-        original_index = {place.place_id: index for index, place in enumerate(places)}
-        distance = sum(
-            distances[original_index[first.place_id]][original_index[second.place_id]]
-            for first, second in pairwise(ordered)
-            if distances[original_index[first.place_id]][original_index[second.place_id]] >= 0
-        )
-        return ordered, distance
+        return (), -1
     return best[1], best[2]
 
 
-def build_route_url(places: tuple[Place, ...]) -> str:
+def build_route_url(
+    places: tuple[Place, ...],
+    start_anchor: Place | None = None,
+    end_anchor: Place | None = None,
+) -> str:
     """Build a cross-platform Google Maps walking directions URL."""
 
-    if len(places) < 2:
-        return places[0].google_maps_uri if places else ""
-    coordinates = [f"{place.latitude:.6f},{place.longitude:.6f}" for place in places]
+    route_points = list(places)
+    if start_anchor is not None:
+        route_points.insert(0, start_anchor)
+    if end_anchor is not None:
+        route_points.append(end_anchor)
+    if len(route_points) < 2:
+        return route_points[0].google_maps_uri if route_points else ""
+    coordinates = [
+        f"{place.latitude:.6f},{place.longitude:.6f}" for place in route_points
+    ]
     parameters = {
         "api": "1",
         "travelmode": "walking",

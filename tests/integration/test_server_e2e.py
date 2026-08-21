@@ -120,7 +120,12 @@ def server_fixture(request: Any) -> Iterator[subprocess.Popen[str]]:
     def stop_server() -> None:
         logger.info("Stopping server process")
         server_process.terminate()
-        server_process.wait()
+        try:
+            server_process.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            logger.warning("Server did not terminate in time; killing it")
+            server_process.kill()
+            server_process.wait(timeout=5)
         logger.info("Server process stopped")
 
     request.addfinalizer(stop_server)
@@ -186,10 +191,13 @@ def test_a2a_chat_stream(server_fixture: subprocess.Popen[str]) -> None:
             role=Role.ROLE_USER,
             parts=[Part(text="Hi!")],
         )
-        return [
-            chunk
-            async for chunk in client.send_message(SendMessageRequest(message=message))
-        ]
+        async with asyncio.timeout(60):
+            return [
+                chunk
+                async for chunk in client.send_message(
+                    SendMessageRequest(message=message)
+                )
+            ]
 
     responses = asyncio.run(_stream())
     assert responses, "No responses received from stream"

@@ -10,6 +10,11 @@ places of interest. Explicitly required preferences must occur in every path whe
 coverage is sufficient; otherwise the tool returns `insufficient_data` rather than
 inventing or silently relaxing results.
 
+Optional start and end anchors can pin the route to a hotel, station, address, or
+landmark inside the resolved city. Round trips use the same resolved anchor as
+both origin and destination. Anchors count toward the 2–4 km walking target but
+do not count as venue stops.
+
 Agent generated with `agents-cli` version `1.4.0`
 
 ## Project Structure
@@ -64,7 +69,8 @@ uv run python -m app.demo \
   --food "vegetarian bistros" \
   --drink "specialty coffee" \
   --interest "modern architecture" \
-  --required "independent ceramics"
+  --required "independent ceramics" \
+  --start-anchor "Gare de Lyon"
 ```
 
 You can also use features from the [ADK](https://adk.dev/) CLI with `uv run adk`.

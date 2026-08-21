@@ -32,6 +32,28 @@
           }
         ]
       }
+    },
+    {
+      "eval_case_id": "tokyo_shibuya_start_anchor",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "Start each of three Tokyo, Japan strolls at Shibuya Station. Include independent menswear, ramen, matcha, and cultural attractions. I do not need to return to the station."
+          }
+        ]
+      }
+    },
+    {
+      "eval_case_id": "los_angeles_distributed_city",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "Create three compact walks in Los Angeles, USA, with independent bookstores, tacos, specialty coffee, and modern architecture."
+          }
+        ]
+      }
     }
   ]
 }
