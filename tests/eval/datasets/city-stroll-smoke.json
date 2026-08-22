@@ -1,0 +1,59 @@
+{
+  "eval_cases": [
+    {
+      "eval_case_id": "tokyo_menswear_ramen_matcha",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "Give me three Tokyo strolls with independent menswear, excellent ramen, matcha, and one cultural stop."
+          }
+        ]
+      }
+    },
+    {
+      "eval_case_id": "paris_ceramics_bistro_architecture",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "Create three strolls in Paris, France, with independent ceramics shops, vegetarian bistros, specialty coffee, and modern architecture. Ceramics is mandatory in every route."
+          }
+        ]
+      }
+    },
+    {
+      "eval_case_id": "new_york_records_bagels_art",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "Plan three compact walks in New York City, USA, around record stores, bagels, espresso, and contemporary art."
+          }
+        ]
+      }
+    },
+    {
+      "eval_case_id": "tokyo_shibuya_start_anchor",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "Start each of three Tokyo, Japan strolls at Shibuya Station. Include independent menswear, ramen, matcha, and cultural attractions. I do not need to return to the station."
+          }
+        ]
+      }
+    },
+    {
+      "eval_case_id": "los_angeles_distributed_city",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "Create three compact walks in Los Angeles, USA, with independent bookstores, tacos, specialty coffee, and modern architecture."
+          }
+        ]
+      }
+    }
+  ]
+}

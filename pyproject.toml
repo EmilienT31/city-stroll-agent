@@ -80,7 +80,7 @@ deprecated = "ignore"
 
 [tool.codespell]
 ignore-words-list = "rouge"
-skip = "./locust_env/*,uv.lock,.venv,./frontend,**/package-lock.json"
+skip = "./locust_env/*,uv.lock,.venv,./frontend,./artifacts,**/package-lock.json"
 
 
 [build-system]
@@ -94,5 +94,4 @@ asyncio_default_fixture_loop_scope = "session"
 
 [tool.hatch.build.targets.wheel]
 packages = ["app","frontend"]
-
 
